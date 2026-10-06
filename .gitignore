@@ -1,0 +1,4 @@
+*
+!.gitignore
+!simulation_with_battery.py
+!*.xlsx
