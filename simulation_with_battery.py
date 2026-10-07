@@ -43,6 +43,7 @@ def run_simulation(
     # Current state
     current_bat_kwh = 0.0
     current_h2_kwh = h2_start_kwh
+    total_deficit_kwh = 0.0
 
     for i in range(len(df)):
         # 1. Calculate Supply
@@ -88,6 +89,9 @@ def run_simulation(
                 remaining_deficit -= energy_from_h2
                 dissipation_kwh += (h2_use_kwh * (1 - h2_fc_eff))
             
+            if remaining_deficit > 0:
+                total_deficit_kwh += remaining_deficit
+                
             dissipation_kwh += (discharge_amount * (1 - bat_eff_dis))
             
         bat_soc_series.append(current_bat_kwh)
@@ -102,8 +106,9 @@ def run_simulation(
     results_df['H2 Energy (kWh)'] = h2_soc_series
     results_df['H2 Volume (m³)'] = [h / 1000.0 for h in h2_soc_series]
     results_df['Hourly Dissipation (kWh)'] = dissipation_step_series
+    results_df['Total System Deficit (kWh)'] = total_deficit_kwh
     
-    return results_df
+    return results_df, total_deficit_kwh
 
 def optimize_pv_and_h2(df, wind_capacity_kw, bat_cap_kwh, bat_eff_ch, bat_eff_dis, h2_elec_eff, h2_fc_eff):
     """
@@ -128,7 +133,7 @@ def optimize_pv_and_h2(df, wind_capacity_kw, bat_cap_kwh, bat_eff_ch, bat_eff_di
     # Stage 1: Find min PV Area such that the system is feasible with a large H2 buffer
     def is_pv_feasible(pv_area):
         # Use a very large H2 buffer for the feasibility check
-        res = run_simulation(df, wind_capacity_kw, pv_area, 1e8, bat_cap_kwh, bat_eff_ch, bat_eff_dis, h2_elec_eff, h2_fc_eff)
+        res, _ = run_simulation(df, wind_capacity_kw, pv_area, 1e8, bat_cap_kwh, bat_eff_ch, bat_eff_dis, h2_elec_eff, h2_fc_eff)
         return res['Battery Energy (kWh)'].min() >= 0
 
     pv_low, pv_high = 0.0, 2000000.0
@@ -149,7 +154,7 @@ def optimize_pv_and_h2(df, wind_capacity_kw, bat_cap_kwh, bat_eff_ch, bat_eff_di
         best_h2 = h2_high
         for _ in range(25): # Increased iterations for precision
             mid_h2 = (h2_low + h2_high) / 2
-            res = run_simulation(df, wind_capacity_kw, pv_area, mid_h2, bat_cap_kwh, bat_eff_ch, bat_eff_dis, h2_elec_eff, h2_fc_eff)
+            res, _ = run_simulation(df, wind_capacity_kw, pv_area, mid_h2, bat_cap_kwh, bat_eff_ch, bat_eff_dis, h2_elec_eff, h2_fc_eff)
             
             # Check if H2 SOC is always >= the 240h buffer AND battery is always >= 0
             h2_soc = res['H2 Energy (kWh)'].values
@@ -163,9 +168,9 @@ def optimize_pv_and_h2(df, wind_capacity_kw, bat_cap_kwh, bat_eff_ch, bat_eff_di
     opt_h2 = find_min_h2(opt_pv)
     
     # Run final simulation with optimized values
-    final_res = run_simulation(df, wind_capacity_kw, opt_pv, opt_h2, bat_cap_kwh, bat_eff_ch, bat_eff_dis, h2_elec_eff, h2_fc_eff)
+    final_res, total_deficit = run_simulation(df, wind_capacity_kw, opt_pv, opt_h2, bat_cap_kwh, bat_eff_ch, bat_eff_dis, h2_elec_eff, h2_fc_eff)
     
-    return opt_pv, opt_h2, final_res
+    return opt_pv, opt_h2, final_res, total_deficit
 
 if __name__ == "__main__":
     filename = "Calculations-Efficiencies-new.xlsx"
@@ -175,7 +180,7 @@ if __name__ == "__main__":
         df = pd.read_excel(filename, sheet_name="Elctric-NoGas", header=9)
         
         # Perform full optimization
-        opt_pv, opt_h2, results = optimize_pv_and_h2(
+        opt_pv, opt_h2, results, total_deficit = optimize_pv_and_h2(
             df,
             WIND_CAPACITY_KW,
             BAT_CAP_KWH,
@@ -194,6 +199,11 @@ if __name__ == "__main__":
         print("-" * 30)
         print(f"Min Battery Energy:   {results['Battery Energy (kWh)'].min():12.2f} kWh")
         print(f"Min H2 Energy:        {results['H2 Energy (kWh)'].min():12.2f} kWh")
+        print(f"Total System Deficit: {total_deficit:12.2f} kWh")
+        print("-" * 30)
+        print(f"Max H2 Energy (Tank): {results['H2 Energy (kWh)'].max():12.2f} kWh")
+        print(f"Max H2 Volume (L):    {results['H2 Energy (kWh)'].max()/1000.0*1000:12.2f} L")
+        print(f"Required H2 Start:    {opt_h2:12.2f} kWh")
         print("="*30)
 
         output_filename = "Simulation_Results.xlsx"
