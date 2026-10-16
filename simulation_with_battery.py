@@ -4,8 +4,8 @@ import os
 
 # --- CONFIGURATION PARAMETERS ---
 # Modify these values to change the simulation input
-WIND_CAPACITY_KW = 10000   # 10 MW
-BAT_CAP_KWH = 50000000     # 50,000,000 kWh
+WIND_CAPACITY_KW = 5000    # Reduced to allow PV to contribute significantly
+BAT_CAP_KWH = 50000       # 500 MWh (500,000 kWh)
 BAT_EFF_CH = 0.95          # Battery Charge Efficiency
 BAT_EFF_DIS = 0.95         # Battery Discharge Efficiency
 H2_ELEC_EFF = 0.75         # Hydrogen Electrolysis Efficiency
@@ -130,17 +130,18 @@ def optimize_pv_and_h2(df, wind_capacity_kw, bat_cap_kwh, bat_eff_ch, bat_eff_di
         # Sum demand and divide by fuel cell efficiency to get required H2 energy
         buffer_kwh[i] = np.sum(demand_series[i+1:end_idx]) / h2_fc_eff
 
-    # Stage 1: Find min PV Area such that the system is feasible with a large H2 buffer
-    def is_pv_feasible(pv_area):
-        # Use a very large H2 buffer for the feasibility check
-        res, _ = run_simulation(df, wind_capacity_kw, pv_area, 1e8, bat_cap_kwh, bat_eff_ch, bat_eff_dis, h2_elec_eff, h2_fc_eff)
-        return res['Battery Energy (kWh)'].min() >= 0
+    # Stage 1: Find min PV Area such that annual generation >= annual demand (Energy Neutrality)
+    def is_energy_neutral(pv_area):
+        res, _ = run_simulation(df, wind_capacity_kw, pv_area, 0, bat_cap_kwh, bat_eff_ch, bat_eff_dis, h2_elec_eff, h2_fc_eff)
+        total_gen = res['Wind Supply (kWh)'].sum() + res['Solar Supply (kWh)'].sum()
+        total_dem = res['Total Demand (kWh) for all houses'].sum()
+        return total_gen >= total_dem
 
-    pv_low, pv_high = 0.0, 2000000.0
+    pv_low, pv_high = 0.0, 10000000.0
     best_pv = pv_high
     for _ in range(20):
         mid_pv = (pv_low + pv_high) / 2
-        if is_pv_feasible(mid_pv):
+        if is_energy_neutral(mid_pv):
             best_pv = mid_pv
             pv_high = mid_pv
         else:
@@ -148,9 +149,9 @@ def optimize_pv_and_h2(df, wind_capacity_kw, bat_cap_kwh, bat_eff_ch, bat_eff_di
             
     opt_pv = best_pv
 
-    # Stage 2: Find min H2 volume for that PV area such that SOC >= buffer
+    # Stage 2: Find min H2 volume for that sustainable PV area such that SOC >= buffer
     def find_min_h2(pv_area):
-        h2_low, h2_high = 0.0, 1e9 # 1 TWh
+        h2_low, h2_high = 0.0, 1e12 # 1 TWh
         best_h2 = h2_high
         for _ in range(25): # Increased iterations for precision
             mid_h2 = (h2_low + h2_high) / 2
@@ -158,7 +159,7 @@ def optimize_pv_and_h2(df, wind_capacity_kw, bat_cap_kwh, bat_eff_ch, bat_eff_di
             
             # Check if H2 SOC is always >= the 240h buffer AND battery is always >= 0
             h2_soc = res['H2 Energy (kWh)'].values
-            if (h2_soc >= buffer_kwh).all() and res['Battery Energy (kWh)'].min() >= 0:
+            if (h2_soc >= buffer_kwh).all() and res['Battery Energy (kWh)'].min() >= -1e-7:
                 best_h2 = mid_h2
                 h2_high = mid_h2
             else:
